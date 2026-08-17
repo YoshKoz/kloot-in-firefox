@@ -56,14 +56,74 @@ function imageResult(base64, note) {
   return { content };
 }
 
-// The extension owns tab ids; BiDi owns context ids. When a tool names a tab we
-// ask the extension for that tab's URL and join on it.
+// The extension owns tab ids; BiDi owns context ids, and nothing in either API
+// maps one to the other. Matching on URL is the obvious join and the wrong one:
+// two tabs showing the same page are indistinguishable, so trusted input lands
+// in whichever tab happened to be found first while the DOM tools read the other
+// — silent, and it looks like the click simply did nothing.
+//
+// Instead the extension stamps a token onto the document and we look for the
+// context carrying it. URL matching stays as the fallback for documents that
+// refuse script injection.
+const contextCache = new Map();
+
+async function readToken(bidi, context) {
+  const res = await bidi
+    .evaluate(context, 'document.documentElement.dataset.klootCtx || null')
+    .catch(() => null);
+  return res?.result?.value ?? null;
+}
+
+// A context with no layout reports a 0x0 viewport, and every input and screenshot
+// command against it fails. Firefox does that for a tab it has never rendered or
+// has discarded to reclaim memory, so the tab has to be selected before it can
+// be driven.
+async function ensureRendered(bidi, browser, tabId, context) {
+  const width = await bidi
+    .evaluate(context, 'window.innerWidth')
+    .then((r) => r?.result?.value ?? 0)
+    .catch(() => 0);
+  if (width > 0) return context;
+
+  await askBrowser(browser, 'activate_tab', { tabId }).catch(() => null);
+  // Selecting a tab is not instant; give layout a moment to exist.
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise((r) => setTimeout(r, 100));
+    const w = await bidi
+      .evaluate(context, 'window.innerWidth')
+      .then((r) => r?.result?.value ?? 0)
+      .catch(() => 0);
+    if (w > 0) break;
+  }
+  return context;
+}
+
+async function contextForTab(bidi, browser, tabId) {
+  const cached = contextCache.get(tabId);
+  if (cached && (await readToken(bidi, cached.context)) === cached.token) {
+    return ensureRendered(bidi, browser, tabId, cached.context);
+  }
+
+  const token = await askBrowser(browser, 'mark_tab', { tabId }).catch(() => null);
+  if (token) {
+    for (const { context } of await bidi.contexts()) {
+      if ((await readToken(bidi, context)) === token) {
+        contextCache.set(tabId, { context, token });
+        return ensureRendered(bidi, browser, tabId, context);
+      }
+    }
+  }
+
+  const url = await askBrowser(browser, 'get_tab_url', { tabId }).catch(() => null);
+  const fallback = await bidi.contextForUrl(url);
+  return fallback ? ensureRendered(bidi, browser, tabId, fallback) : null;
+}
+
 async function resolveContext(bidi, args, browser) {
   if (args.context) return args.context;
 
   if (typeof args.tabId === 'number' && browser) {
-    const url = await askBrowser(browser, 'get_tab_url', { tabId: args.tabId });
-    const ctx = await bidi.contextForUrl(url);
+    const ctx = await contextForTab(bidi, browser, args.tabId);
     if (ctx) return ctx;
   }
   return bidi.activeContext();
@@ -141,6 +201,32 @@ async function handleBidiTool({ bidi, tool, args, browser }) {
   if (tool === 'computer') {
     const context = await resolveContext(bidi, args, browser);
     if (!context) throw new Error('no browsing context available');
+
+    // Firefox does not lay out a document it is not painting, so a tab in a
+    // window that is minimised or parked on another virtual desktop reports a
+    // 0x0 viewport. Every input and screenshot command against it then fails.
+    //
+    // This returns instead of throwing on purpose: throwing lets the caller fall
+    // through to the extension's synthetic-event fallback, which reports "no
+    // element at (x, y)" and buries the actual cause.
+    const viewport = await bidi
+      .evaluate(context, '[window.innerWidth, window.innerHeight]')
+      .then((r) => (r?.result?.value ?? []).map((v) => v?.value ?? 0))
+      .catch(() => [0, 0]);
+
+    if (!viewport[0] || !viewport[1]) {
+      return {
+        content: [{
+          type: 'text',
+          text:
+            'The target tab is not being rendered (viewport is 0x0), so trusted input and screenshots ' +
+            'cannot be aimed at it. Firefox only lays out a window it is actually painting: bring the ' +
+            'Firefox window to the current virtual desktop and make sure it is not minimised, or run it ' +
+            'headless (scripts/launch-firefox.sh --headless), where background tabs are always laid out.',
+        }],
+        is_error: true,
+      };
+    }
 
     const action = args.action;
     const [x, y] = Array.isArray(args.coordinate) ? args.coordinate : [args.x, args.y];

@@ -1,0 +1,14 @@
+{
+  "name": "kloot-in-firefox",
+  "version": "1.0.0",
+  "description": "Browser automation for Claude Code and local models, running against Firefox.",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "mcp": "node mcp/server.js",
+    "agent": "node agent/cli.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}

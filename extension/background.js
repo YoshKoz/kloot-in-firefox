@@ -140,6 +140,28 @@ async function handleBridgeQuery(msg) {
     if (msg.method === 'get_tab_url') {
       const tab = await browser.tabs.get(msg.params.tabId);
       result = tab.url;
+    } else if (msg.method === 'mark_tab') {
+      // Stamps a one-off token onto the document so the bridge can identify this
+      // exact tab's BiDi context. URLs cannot do that job: two tabs showing the
+      // same page are indistinguishable, and the bridge would then deliver
+      // trusted input to whichever one it found first.
+      //
+      // dataset lives on the shared DOM, so the value written here from the
+      // extension's isolated world is readable from the page's main world, which
+      // is where BiDi evaluates.
+      const token = `k${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+      await browser.tabs.executeScript(msg.params.tabId, {
+        code: `document.documentElement.dataset.klootCtx = ${JSON.stringify(token)}; true`,
+      });
+      result = token;
+    } else if (msg.method === 'activate_tab') {
+      // A tab Firefox has never rendered — or has discarded under memory
+      // pressure — reports a 0x0 viewport, and BiDi cannot aim trusted input or
+      // take a screenshot of that. Selecting it forces a layout.
+      const tab = await browser.tabs.get(msg.params.tabId);
+      await browser.tabs.update(tab.id, { active: true });
+      await browser.windows.update(tab.windowId, { focused: true });
+      result = true;
     }
   } catch {
     result = null;

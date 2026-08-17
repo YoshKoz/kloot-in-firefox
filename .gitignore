@@ -2,3 +2,6 @@ node_modules/
 
 # Built by scripts/build-xpi.sh
 kloot-in-firefox.xpi
+
+# Local model weights live outside the repo (see scripts/launch-llm.sh)
+*.gguf

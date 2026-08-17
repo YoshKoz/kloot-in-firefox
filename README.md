@@ -158,6 +158,75 @@ so the trusted click still reaches the page, and everything lives in a shadow
 root attached outside `<body>`, so `read_page`, `find` and `get_page_text` — none
 of which cross a shadow boundary — never see it.
 
+## MCP server
+
+`mcp/server.js` exposes the browser over MCP (JSON-RPC on stdio), so any MCP
+client can drive it — Claude Code, the local agent below, or anything else.
+
+```jsonc
+// .mcp.json
+{
+  "mcpServers": {
+    "kloot-in-firefox": {
+      "command": "node",
+      "args": ["/path/to/kloot-in-firefox/mcp/server.js"],
+      "env": { "KLOOT_PORT": "8765" }
+    }
+  }
+}
+```
+
+It is not a 1:1 pass-through of the bridge's tools. Two things are changed
+because the client may be a small local model:
+
+- **`computer` is split into verbs.** `browser_click`, `browser_type`,
+  `browser_press_key`, `browser_scroll` instead of one polymorphic tool with an
+  `action` enum and conditionally-required coordinates.
+- **Tab ids never reach the client.** The server tracks the tab it is driving, so
+  a model cannot lose track of it or invent one.
+
+`browser_click` takes the *visible text* of its target and resolves the
+coordinates itself. Asking a model to chain `find` then `click` reliably produces
+the one failure that looks like success: it skips the find and clicks a
+plausible-looking coordinate, hitting nothing. When a click or an Enter starts a
+navigation the tool waits for it and reports the destination, so a caller cannot
+read the page it just left and answer confidently about the wrong document.
+
+## Local model
+
+`agent/cli.js` replaces the cloud entirely: reasoning runs on this machine
+against llama.cpp, acting through the MCP server above. Nothing leaves the
+machine except the pages the browser was asked to visit.
+
+```sh
+node agent/cli.js                # REPL
+node agent/cli.js "go to example.com and tell me the heading"
+./scripts/launch-llm.sh          # only if no llama.cpp service is already up
+```
+
+The agent finds a server on `:8081` or `:61093` by itself; override with
+`KLOOT_LLM_URL`. A llama.cpp router lists every preset it knows, sorted by name,
+so the agent picks a model it knows works in a tool loop rather than whichever
+sorts first — override with `KLOOT_LLM_MODEL`.
+
+**Model.** Qwen3.5-4B at Q6_K — 3.8GB of weights, and its hybrid attention keeps
+the KV cache small enough that a 32k context still fits an RTX 2060 alongside
+them. Do not drop below Q4: sub-4-bit quants emit malformed tool-call arguments
+regardless of the template. `--jinja` is mandatory, otherwise llama-server never
+parses Qwen's tool-call delimiters and every call arrives as prose.
+
+Against the same tasks, Qwen3-8B-Q4 needed 9 steps and clicked the wrong element;
+Qwen3.5-4B-Q6 finished in 6 and picked the right one.
+
+The loop is built for a small model in a finite window:
+
+- observations are trimmed oldest-first as the window fills, so a long task
+  forgets details instead of hard-failing on overflow
+- an identical repeated tool call is intercepted and answered with a nudge
+- `finish` is an explicit tool, so completion is a parseable event
+- only the text-driven tools are offered; screenshots and protocol capture stay
+  available to other MCP clients but are wasted context for a 4B
+
 ## Tests
 
 Requires Firefox in debugging mode on `KLOOT_BIDI_PORT`.
@@ -192,8 +261,12 @@ KLOOT_PORT=8799 node test-overlay.js
   bridge starts, or they will be refused. Both the bridge and the installer
   release the session on exit, so stopping the bridge is enough — a Firefox
   restart is only needed if one of them is killed with `SIGKILL`.
-- Extension tab ids and BiDi context ids are separate namespaces; they are joined
-  by URL, which is ambiguous if two tabs show the same page.
+- **A headed Firefox only lays out the window it is painting.** A tab in a
+  minimised window, or one parked on another virtual desktop, reports a 0x0
+  viewport, and BiDi cannot aim trusted input or take a screenshot of it. The
+  `computer` tool detects this and says so rather than silently degrading to
+  synthetic events. Headless has no such problem — background tabs are always
+  laid out — which is why the tests run that way.
 - Only one browser peer at a time. A second connection replaces the first, so a
   stale socket cannot wedge the bridge — but two extensions cannot share it.
 - No permission prompting. Claude Code's `allowed_domains` and permission-mode
