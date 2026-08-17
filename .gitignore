@@ -1,0 +1,4 @@
+node_modules/
+
+# Built by scripts/build-xpi.sh
+kloot-in-firefox.xpi

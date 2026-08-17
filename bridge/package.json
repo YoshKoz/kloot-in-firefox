@@ -1,0 +1,23 @@
+{
+  "name": "kloot-in-firefox-bridge",
+  "version": "1.0.0",
+  "description": "Local WebSocket bridge pairing Claude Code with the kloot-in-firefox extension.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "install-extension": "node install-extension.js",
+    "test:relay": "node test-relay.js",
+    "test:bidi": "node test-bidi.js",
+    "test:extension": "node test-extension.js",
+    "test:computer": "node test-computer.js",
+    "test:overlay": "node test-overlay.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "private": true
+}

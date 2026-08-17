@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "name": "kloot-in-firefox",
+  "version": "0.1.0",
+  "description": "Local browser-automation bridge for Claude Code, over a loopback WebSocket.",
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "kloot-in-firefox@yoshkoz",
+      "strict_min_version": "128.0"
+    }
+  },
+
+  "permissions": [
+    "tabs",
+    "activeTab",
+    "storage",
+    "webNavigation",
+    "<all_urls>"
+  ],
+
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+
+  "browser_action": {
+    "default_title": "kloot-in-firefox"
+  }
+}
